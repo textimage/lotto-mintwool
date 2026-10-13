@@ -1,0 +1,45 @@
+{
+	email __ACME_EMAIL__
+	admin localhost:2019
+}
+
+# BEGIN LOTTO
+__LOTTO_DOMAIN__ {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:3000 {
+		header_up X-Real-IP {remote_host}
+	}
+}
+# END LOTTO
+
+# BEGIN TOOLS
+__TOOLS_DOMAIN__ {
+	encode zstd gzip
+	@libraryUpload {
+		method POST
+		path /api/library
+	}
+	request_body @libraryUpload {
+		max_size 301MB
+	}
+	@otherUploads not path /api/library
+	request_body @otherUploads {
+		max_size 101MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self'; connect-src 'self' blob: wss://__TOOLS_DOMAIN__; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		-Server
+	}
+	reverse_proxy 127.0.0.1:3001 {
+		transport http {
+			response_header_timeout 210s
+		}
+	}
+}
+# END TOOLS

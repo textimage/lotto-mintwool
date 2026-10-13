@@ -40,64 +40,25 @@ npm.cmd start
 
 ## OCI 배포
 
-### 서버 최초 준비
-
-- 도메인의 DNS A 레코드를 VM 고정 공인 IP에 연결합니다. IPv6를 구성하지 않았다면 오래된 AAAA 레코드를 제거합니다.
-- OCI NSG/보안 목록과 OS 방화벽에서 TCP 80·443, GitHub runner에서 접근할 SSH 포트를 허용합니다. 앱 포트는 인터넷에 공개하지 않습니다.
-- 배포용 SSH 공개 키를 서버 사용자의 `~/.ssh/authorized_keys`에 등록하고, 비대화형 인증이 가능한 개인 키를 준비합니다.
-- 서버 호스트 키 지문을 OCI 콘솔 등 신뢰할 수 있는 경로에서 확인한 뒤 일치하는 `known_hosts` 항목을 준비합니다.
-
-```sh
-sudo install -d -m 700 -o "$USER" -g "$(id -gn)" /opt/mintwool/lotto
-docker compose version
-command -v flock curl tar
-```
-
-`ssh-keyscan -p 22 YOUR_VM_IP`로 공개 호스트 키를 수집할 수 있으며, 지문은 별도로 확인합니다. SSH 포트가 22가 아니면 `known_hosts`의 호스트 표기는 `[호스트]:포트`입니다. 등록한 접속 호스트와 키 항목이 일치해야 합니다.
+[OCI 설치와 GitHub Actions 배포](OCI/README.md)에 새 서버·도메인 준비, 설치 명령, Repository Secrets 원본·예제, 첫 배포·로그인이 정리되어 있습니다. 이 저장소의 `OCI` 폴더만으로 설치 파일과 문서를 확보할 수 있습니다. Lotto·Tools의 두 도메인 운영, Lotto 단독, Tools 단독의 세 설치 방식을 지원합니다.
 
 ### GitHub Actions
 
-[배포 워크플로](.github/workflows/deploy.yml)는 `main` push와 PR에서 자동 테스트·운영 빌드·셸 문법·Linux 컨테이너·QR worker를 검증합니다. 검증이 성공한 `main` push와 `main`의 수동 실행만 배포하며, 더 최신 `main` 커밋이 있으면 오래된 실행의 배포를 건너뜁니다.
+서버 설치와 Repository Secrets·Variables 등록은 이 저장소의 `OCI/README.md` 순서대로 진행합니다. Lotto 최초 설치에는 Secrets 3개·Variables 7개가 필요합니다. 단독 운영과 공동 운영 모두 서버 Caddy를 사용하며 `OCI_PROXY_MODE=existing`, `OCI_DEPLOY_LOCK_FILE=/opt/mintwool/deploy.lock`을 지정합니다.
 
-저장소의 **Settings → Secrets and variables → Actions**에 다음 Repository secrets와 variables를 등록합니다. Tools도 같은 이름과 위치를 사용하며, GitHub Environment는 참조하지 않습니다.
+`APP_DOMAIN`은 설치 때 선택한 Lotto 도메인입니다. `OCI_ENV_BOOTSTRAP`은 서버 루트 `.env`가 없을 때만 사용하고 최초 설치 이후에는 [운영 환경설정 변경](#운영-환경설정-변경) 절차로 관리합니다.
 
-| Secret                | 내용                                                              |
-| --------------------- | ----------------------------------------------------------------- |
-| `OCI_SSH_PRIVATE_KEY` | PC의 `C:\Users\RDS\.ssh\mintwool_actions` 개인키 전체, BEGIN·END 포함 |
-| `OCI_SSH_KNOWN_HOSTS` | PC의 `C:\Users\RDS\Documents\OCI\known_hosts` 전체. 서버의 `/etc/ssh/ssh_host_ed25519_key.pub`와 지문을 대조한 값 |
-| `OCI_ENV_BOOTSTRAP`   | PC의 `Lotto/.env.oci` 전체. `setup:admin`이 생성한 암호 해시를 포함하는 최초 설치용 설정 |
-
-| Variable               | 기본값·용도                                       |
-| ---------------------- | ------------------------------------------------- |
-| `OCI_HOST`             | VM 공인 IP 또는 SSH 접속 DNS 이름                |
-| `OCI_USERNAME`         | `ubuntu`                                          |
-| `OCI_SSH_PORT`         | `22`                                              |
-| `OCI_DEPLOY_DIR`       | `/opt/mintwool/lotto`                                 |
-| `APP_DOMAIN`           | `lotto.mintwool.com`                              |
-| `OCI_PROXY_MODE`       | `existing`; 단독 프록시는 `caddy`                 |
-| `OCI_DEPLOY_LOCK_FILE` | 기본값 없음. 공동 운영 서버의 공유 잠금 파일 경로 |
-
-`OCI_ENV_BOOTSTRAP`은 **서버 루트에 `.env`가 없을 때만** 적용됩니다. 최초 설치 이후에는 Secret을 삭제할 수 있으며, 이후 설정은 [운영 환경설정 변경](#운영-환경설정-변경) 절차로 관리합니다.
-
-`main`에 push하거나 Actions의 **Verify and deploy to OCI → Run workflow → main**으로 배포합니다. 두 프로젝트 모두 검증 job 성공 후 `npm run deploy:oci`로 배포하며 이 명령은 GitHub Linux 실행기의 CI용 진입점입니다. 소스를 SSH로 전달하고 VM에서 이미지를 빌드하므로 이미지 레지스트리와 OCI API 키는 필요하지 않습니다. SSH 호스트 키 또는 필수 Secret에 문제가 있으면 Actions 로그를 확인합니다.
-
-### 단독 프록시와 공용 프록시
-
-단독 서버에서는 `OCI_PROXY_MODE=caddy`를 사용합니다. Compose의 Caddy가 인증서 발급·갱신과 HTTP→HTTPS 이동을 관리하며, 인증서는 영속 볼륨에 저장됩니다.
-
-기존 Nginx/Caddy가 80·443을 사용한다면 `OCI_PROXY_MODE=existing`을 지정합니다. 최초 배포 전에 기존 프록시에서 도메인을 `127.0.0.1:3000`으로 연결하고 HTTPS를 설정합니다. Nginx를 사용하면 원래 `Host`, `X-Real-IP`, `X-Forwarded-Proto` 헤더를 전달합니다. 앱 포트를 바꾸면 서버 `.env`의 `APP_PORT`와 프록시 주소도 맞춥니다. 이 모드에서는 앱만 배포하고 공용 프록시는 재시작하지 않습니다.
-
-Tools와 같은 서버의 공용 Caddy를 사용할 때는 `OCI_PROXY_MODE=existing`, `OCI_DEPLOY_LOCK_FILE=/opt/mintwool/deploy.lock`을 등록합니다. 공유 잠금으로 서버 작업을 직렬화하며 최대 15분 기다립니다. 잠금 파일은 PC의 `OCI/setup-server.sh`로 최초 준비하고, 공동 운영 절차는 `C:\Users\RDS\Documents\OCI\README.md`를 참고합니다.
+[배포 워크플로](.github/workflows/deploy.yml)는 `main` push와 PR에서 테스트·운영 빌드·셸·설치 스크립트·Linux 컨테이너·QR worker를 검증합니다. 검증에 성공한 최신 `main`의 push 또는 수동 실행만 배포합니다. 두 프로젝트의 CI 진입점은 `npm run deploy:oci`이며 소스를 SSH로 전송해 서버에서 빌드하므로 OCI API 키·이미지 레지스트리는 필요 없습니다.
 
 ### 수동 PowerShell 배포
 
 [수동 배포 스크립트](scripts/deploy.ps1)도 같은 서버 배포·마이그레이션·복구 절차를 사용합니다. 첫 배포에서는 로컬 `.env`를 전달하고 이후 서버의 기존 `.env`를 유지합니다. SSH 호스트 키는 미리 등록하거나 `-KnownHostsFile`로 확인된 파일을 지정합니다.
 
 ```powershell
-.\scripts\deploy.ps1 -SshHost YOUR_VM_IP -SshUser ubuntu -IdentityFile C:\keys\oci-deploy -KnownHostsFile C:\keys\oci_known_hosts
+.\scripts\deploy.ps1 -SshHost YOUR_VM_IP -SshUser ubuntu -Domain YOUR_LOTTO_DOMAIN -UseExistingProxy -DeployLockFile /opt/mintwool/deploy.lock -IdentityFile C:\keys\oci-deploy -KnownHostsFile C:\keys\oci_known_hosts
 ```
 
-사용자 지정 SSH 포트에는 `-SshPort`, 기존 프록시에는 `-UseExistingProxy`를 추가합니다. Tools와 공동 운영하는 경우 `-UseExistingProxy -DeployLockFile /opt/mintwool/deploy.lock`을 함께 지정합니다. 실행 중인 앱에 관리되는 릴리스 기록이 없으면 자동 전환하지 않습니다.
+`YOUR_VM_IP`·`YOUR_LOTTO_DOMAIN`과 두 키 파일 경로를 실제 값으로 바꿉니다. 단독·공동 설치 모두 위 프록시·잠금 인자를 사용하고 사용자 지정 SSH 포트에는 `-SshPort`를 추가합니다. 실행 중인 앱에 관리되는 릴리스 기록이 없으면 자동 전환하지 않습니다.
 
 ### 배포 순서와 실패 처리
 

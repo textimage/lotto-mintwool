@@ -31,6 +31,8 @@ jobs:
           sh -n scripts/deploy-root.sh
           sh -n scripts/compose.sh
           bash -n scripts/upload-deploy.sh
+      - name: Test OCI installation modes in isolated containers
+        run: bash OCI/tests/run-tests.sh
       - name: Verify Linux container and native modules
         run: |
           docker build --target source -t lotto-note:source-ci .

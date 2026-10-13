@@ -1,0 +1,6 @@
+/.tmp/
+/known_hosts*
+/*.pub
+/*.pem
+/*.key
+/setup-code.txt
