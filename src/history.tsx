@@ -362,8 +362,16 @@ export function HistoryLookup({
                 </>
               ) : (
                 <Empty
-                  title="조건에 맞는 과거 당첨이 없어요"
-                  text="조회 범위를 넓히거나 다른 조합을 입력해 보세요."
+                  title={
+                    data.compared
+                      ? "조건에 맞는 과거 당첨이 없어요"
+                      : "조회 범위에 수집된 당첨 기록이 없어요"
+                  }
+                  text={
+                    data.compared
+                      ? "조회 범위를 넓히거나 다른 조합을 입력해 보세요."
+                      : "조회 범위를 넓히거나 회차 데이터를 동기화해 주세요."
+                  }
                 />
               )}
               <p className="footnote">
@@ -388,20 +396,22 @@ export function HistoryLookup({
 }
 
 export function HistoryDialog({
-  favorite,
+  numbers,
+  description,
   close,
 }: {
-  favorite: Favorite;
+  numbers: number[];
+  description?: string;
   close: () => void;
 }) {
   return (
     <Dialog
-      title="당첨이력"
-      description={favoriteLabel(favorite)}
+      title="과거 당첨 조회"
+      description={description}
       className="history-dialog"
       close={close}
     >
-      <HistoryLookup initialNumbers={favorite.numbers} fixed />
+      <HistoryLookup key={numbers.join(",")} initialNumbers={numbers} fixed />
     </Dialog>
   );
 }

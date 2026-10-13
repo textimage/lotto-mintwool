@@ -1082,6 +1082,38 @@ label .field-hint {
 .filter-count strong {
   color: var(--muted);
 }
+.purchase-filter-footer {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
+}
+.purchase-filter-footer .filter-reset {
+  flex-shrink: 0;
+}
+.purchase-filter-footer .filter-count {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ticket-game-entry {
+  min-width: 0;
+}
+.ticket-game-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0 3px;
+}
+.ticket-game-actions .button {
+  min-width: 0;
+  font-size: 11px;
+  padding: 6px 9px;
+}
+.purchase-favorites-error {
+  margin-bottom: 12px;
+}
 .pagination {
   display: flex;
   justify-content: center;
@@ -3139,6 +3171,37 @@ label .field-hint {
   .password-field button {
     top: 2px;
     right: 2px;
+  }
+}
+@media (max-width: 760px) {
+  .purchase-filters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: end;
+    gap: 10px;
+  }
+  .purchase-filters > label {
+    min-width: 0;
+  }
+  .purchase-filters input,
+  .purchase-filters select {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    height: 44px;
+  }
+  .purchase-filter-footer {
+    grid-column: 1 / -1;
+    justify-content: space-between;
+  }
+  .purchase-filter-footer .filter-count {
+    margin-left: 0;
+    text-align: right;
+    line-height: 1.7;
+  }
+  .ticket-game-actions .button {
+    flex: 1 1 auto;
+    min-height: 44px;
   }
 }
 @container favorites (max-width: 740px) {

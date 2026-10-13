@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Copy, Dices, Heart, LoaderCircle, Target } from "lucide-react";
 import {
   DEFAULT_SCORE_WEIGHTS,
@@ -16,6 +16,7 @@ import {
 import { api, useAction, useApp } from "../lib";
 import { Ball, Empty, ErrorBox, Numbers, PageTitle } from "../components";
 import { FavoriteForm } from "./records";
+import { HistoryDialog } from "../history";
 
 function optionalNumbers(value: string): number[] {
   if (!value.trim()) return [];
@@ -111,9 +112,12 @@ export function GeneratorPage() {
   });
   const [result, setResult] = useState<GenerationResult | null>(null);
   const [save, setSave] = useState<number[] | null>(null);
+  const [history, setHistory] = useState<{
+    numbers: number[];
+    index: number;
+  } | null>(null);
   const action = useAction();
   const { toast } = useApp();
-  const navigate = useNavigate();
   const definition = generationAlgorithm(algorithm);
   const applyBalance = algorithm === "balanced" || balanceEnabled;
   const games = result?.games ?? [];
@@ -410,9 +414,10 @@ export function GeneratorPage() {
                         <button
                           className="icon-button"
                           aria-label={`${i + 1}번째 조합 과거 조회`}
-                          onClick={() =>
-                            navigate("/history", { state: { numbers } })
-                          }
+                          onClick={(event) => {
+                            event.currentTarget.focus({ preventScroll: true });
+                            setHistory({ numbers: [...numbers], index: i + 1 });
+                          }}
                         >
                           <Target size={19} />
                         </button>
@@ -483,6 +488,13 @@ export function GeneratorPage() {
         </section>
       </div>
       {save && <FavoriteForm numbers={save} close={() => setSave(null)} />}
+      {history && (
+        <HistoryDialog
+          numbers={history.numbers}
+          description={`생성 조합 ${String(history.index).padStart(2, "0")}`}
+          close={() => setHistory(null)}
+        />
+      )}
     </>
   );
 }

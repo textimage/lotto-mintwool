@@ -7,7 +7,7 @@ import { randomInt } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { IncomingMessage } from "node:http";
-import { Store } from "./db.js";
+import { Store, FavoriteDuplicateError } from "./db.js";
 import { SyncEngine, createBackup } from "./sync.js";
 import {
   GENERATION_ALGORITHM_IDS,
@@ -135,6 +135,8 @@ export function createApp(
     })(c, next),
   );
   app.onError((error, c) => {
+    if (error instanceof FavoriteDuplicateError)
+      return c.json({ error: error.message }, 409);
     if (error instanceof ZodError)
       return c.json(
         {
@@ -338,6 +340,13 @@ export function createApp(
       201,
     ),
   );
+  app.post("/api/favorites/ensure", async (c) => {
+    const { numbers } = z
+      .object({ numbers: numbersSchema })
+      .parse(await c.req.json());
+    const result = store.ensureFavorite(c.get("user").id, numbers);
+    return c.json(result, result.created ? 201 : 200);
+  });
   app.put("/api/favorites/:id", async (c) => {
     if (!store.favorite(c.req.param("id"), c.get("user").id))
       return c.json({ error: "조합을 찾지 못했습니다." }, 404);
@@ -753,7 +762,8 @@ export function createApp(
     store.sql.transaction(() => {
       store.sql.prepare("DELETE FROM tickets WHERE user_id=?").run(userId);
       store.sql.prepare("DELETE FROM favorites WHERE user_id=?").run(userId);
-      for (const f of backup.favorites) store.saveFavorite(userId, f, f.id, f);
+      for (const f of backup.favorites)
+        store.restoreFavorite(userId, f, f.id, f);
       for (const t of backup.purchases) store.saveTicket(userId, t, t.id, t);
       store.saveSettings(backup.settings);
     })();

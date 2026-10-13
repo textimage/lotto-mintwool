@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { Store } from "../server/db.js";
 import { hashPassword, tokenHash } from "../server/auth.js";
 import { createApp } from "../server/app.js";
@@ -130,6 +131,278 @@ test("grouped purchases filter before grouping and never split a round across pa
     assert.deepEqual(empty.groups, []);
     assert.deepEqual(empty.latestRounds, []);
     assert.equal(empty.totalGames, 0);
+  } finally {
+    h.store.close();
+  }
+});
+
+test("ensure favorites validates requests, creates once and preserves existing metadata and purchase totals", async () => {
+  const h = harness();
+  try {
+    const numbers = [1, 2, 3, 4, 5, 6];
+    assert.equal(
+      (await h.call("/favorites/ensure", "POST", { numbers })).status,
+      401,
+    );
+    await h.login();
+    assert.equal(
+      (
+        await h.call(
+          "/favorites/ensure",
+          "POST",
+          { numbers },
+          {
+            Origin: "https://untrusted.example",
+          },
+        )
+      ).status,
+      403,
+    );
+    for (const invalid of [
+      [1, 1, 2, 3, 4, 5],
+      [1, 2, 3],
+      [0, 2, 3, 4, 5, 6],
+    ])
+      assert.equal(
+        (await h.call("/favorites/ensure", "POST", { numbers: invalid }))
+          .status,
+        400,
+      );
+    await h.call("/purchases", "POST", {
+      drawNo: 1245,
+      drawDate: drawDateFor(1245),
+      games: [
+        { numbers, quantity: 3 },
+        { numbers, quantity: 1 },
+      ],
+    });
+    const purchasesBefore = await (await h.call("/purchases")).json();
+    const totalsBefore = await (await h.call("/dashboard")).json();
+    const responses = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        h.call("/favorites/ensure", "POST", {
+          numbers: index % 2 ? [...numbers].reverse() : numbers,
+        }),
+      ),
+    );
+    assert.equal(
+      responses.filter((response) => response.status === 201).length,
+      1,
+    );
+    assert.equal(
+      responses.filter((response) => response.status === 200).length,
+      5,
+    );
+    const results = await Promise.all(
+      responses.map((response) => response.json()),
+    );
+    const favorite = results.find((result) => result.created).favorite;
+    assert.equal(new Set(results.map((result) => result.favorite.id)).size, 1);
+    assert.deepEqual(favorite.numbers, numbers);
+    assert.equal(favorite.name, "");
+    assert.equal(favorite.memo, "");
+    assert.equal(
+      (await (await h.call("/favorites")).json()).favorites.length,
+      1,
+    );
+    const named = await (
+      await h.call("/favorites/" + favorite.id, "PUT", {
+        numbers,
+        name: "Keep this name",
+        memo: "Keep this memo",
+      })
+    ).json();
+    const repeated = await (
+      await h.call("/favorites/ensure", "POST", {
+        numbers: [...numbers].reverse(),
+        name: "Ignored",
+        memo: "Ignored",
+        allowDuplicates: true,
+      })
+    ).json();
+    assert.equal(repeated.created, false);
+    assert.deepEqual(repeated.favorite, named);
+    await h.call("/history", "POST", { numbers });
+    assert.deepEqual(
+      await (await h.call("/purchases")).json(),
+      purchasesBefore,
+    );
+    const totalsAfter = await (await h.call("/dashboard")).json();
+    for (const key of [
+      "confirmedPrize",
+      "totalGames",
+      "wonGames",
+      "unsettledGames",
+      "settledGames",
+    ])
+      assert.equal(totalsAfter[key], totalsBefore[key]);
+  } finally {
+    h.store.close();
+  }
+});
+
+test("interactive favorites reject duplicate additions and number changes but allow self edits", async () => {
+  const h = harness();
+  try {
+    await h.login();
+    const first = await (
+      await h.call("/favorites", "POST", { numbers: [1, 2, 3, 4, 5, 6] })
+    ).json();
+    const second = await (
+      await h.call("/favorites", "POST", { numbers: [11, 12, 13, 14, 15, 16] })
+    ).json();
+    const duplicate = await h.call("/favorites", "POST", {
+      numbers: [6, 5, 4, 3, 2, 1],
+      name: "Another name",
+      allowDuplicates: true,
+    });
+    assert.equal(duplicate.status, 409);
+    assert.match((await duplicate.json()).error, /이미 나의 번호/);
+    assert.equal(
+      (
+        await h.call("/favorites/" + second.id, "PUT", {
+          numbers: first.numbers,
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await h.call("/favorites/" + first.id, "PUT", {
+          numbers: [...first.numbers].reverse(),
+          name: "Updated",
+          memo: "Own metadata edit",
+        })
+      ).status,
+      200,
+    );
+    const items = (await (await h.call("/favorites")).json()).favorites;
+    assert.equal(items.length, 2);
+    assert.deepEqual(
+      items.find((item: { id: string }) => item.id === second.id),
+      second,
+    );
+  } finally {
+    h.store.close();
+  }
+});
+
+test("legacy duplicate favorites and their purchase references survive backup restore and metadata edits", async () => {
+  const h = harness();
+  try {
+    await h.login();
+    const favorite = await (
+      await h.call("/favorites", "POST", {
+        numbers: [1, 2, 3, 4, 5, 6],
+        name: "Original",
+        memo: "Original memo",
+      })
+    ).json();
+    await h.call("/purchases", "POST", {
+      drawNo: 1245,
+      drawDate: drawDateFor(1245),
+      source: "favorite",
+      favoriteId: favorite.id,
+      games: [{ numbers: favorite.numbers, quantity: 2 }],
+    });
+    const backup = await (await h.call("/backup")).json();
+    const legacy = {
+      ...favorite,
+      id: randomUUID(),
+      name: "Legacy duplicate",
+      memo: "Different memo must survive",
+    };
+    backup.favorites.push(legacy);
+    backup.purchases[0].favoriteId = legacy.id;
+    assert.equal(
+      (await h.call("/backup/restore", "POST", { confirmed: true, backup }))
+        .status,
+      200,
+    );
+    const restored = await (await h.call("/backup")).json();
+    assert.deepEqual(
+      restored.favorites.sort((a: { id: string }, b: { id: string }) =>
+        a.id.localeCompare(b.id),
+      ),
+      backup.favorites.sort((a: { id: string }, b: { id: string }) =>
+        a.id.localeCompare(b.id),
+      ),
+    );
+    assert.deepEqual(restored.purchases, backup.purchases);
+    assert.equal(
+      (
+        await h.call("/favorites/" + legacy.id, "PUT", {
+          numbers: [...legacy.numbers].reverse(),
+          name: "Updated legacy metadata",
+          memo: legacy.memo,
+        })
+      ).status,
+      200,
+    );
+    const ensured = await h.call("/favorites/ensure", "POST", {
+      numbers: legacy.numbers,
+    });
+    assert.equal(ensured.status, 200);
+    assert.equal((await ensured.json()).created, false);
+    assert.equal(
+      (await h.call("/favorites", "POST", { numbers: legacy.numbers })).status,
+      409,
+    );
+    assert.equal(
+      (await (await h.call("/favorites")).json()).favorites.length,
+      2,
+    );
+  } finally {
+    h.store.close();
+  }
+});
+
+test("favorite deduplication is scoped to the authenticated user", async () => {
+  const h = harness();
+  try {
+    await h.login();
+    const numbers = [1, 2, 3, 4, 5, 6];
+    const owner = await (
+      await h.call("/favorites/ensure", "POST", { numbers })
+    ).json();
+    h.store.sql
+      .prepare("INSERT INTO users VALUES(?,?,?,?)")
+      .run(randomUUID(), "second-user", hash, new Date().toISOString());
+    const login = await h.call("/auth/login", "POST", {
+      username: "second-user",
+      password,
+    });
+    assert.equal(login.status, 200);
+    const headers = { Cookie: login.headers.get("set-cookie")!.split(";")[0] };
+    const response = await h.call(
+      "/favorites/ensure",
+      "POST",
+      { numbers },
+      headers,
+    );
+    assert.equal(response.status, 201);
+    const other = await response.json();
+    assert.notEqual(other.favorite.id, owner.favorite.id);
+    assert.equal(
+      (
+        await h.call(
+          "/favorites/" + owner.favorite.id,
+          "PUT",
+          { numbers },
+          headers,
+        )
+      ).status,
+      404,
+    );
+    assert.equal(
+      (await (await h.call("/favorites")).json()).favorites.length,
+      1,
+    );
+    assert.equal(
+      (await (await h.call("/favorites", "GET", undefined, headers)).json())
+        .favorites.length,
+      1,
+    );
   } finally {
     h.store.close();
   }

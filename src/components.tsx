@@ -9,7 +9,7 @@ import {
   Grid3X3,
 } from "lucide-react";
 import { dateLabel, money } from "./lib";
-import type { GameResult, TicketView } from "../shared/domain";
+import type { GameResult, PurchaseGame, TicketView } from "../shared/domain";
 
 export function Ball({
   number,
@@ -262,10 +262,12 @@ export function TicketCard({
   ticket,
   actions,
   showRound = true,
+  renderGameActions,
 }: {
   ticket: TicketView;
   actions?: ReactNode;
   showRound?: boolean;
+  renderGameActions?: (game: PurchaseGame, index: number) => ReactNode;
 }) {
   return (
     <article className="card ticket-card">
@@ -289,30 +291,37 @@ export function TicketCard({
       </div>
       <div className="ticket-games">
         {ticket.games.map((game, i) => (
-          <div className="ticket-game" key={game.id ?? i}>
-            <span className="game-index">
-              {i < 26 ? String.fromCharCode(65 + i) : i + 1}
-            </span>
-            <Numbers
-              numbers={game.numbers}
-              matched={
-                ["pending", "missing"].includes(ticket.results[i].status)
-                  ? undefined
-                  : ticket.results[i].matchedNumbers
-              }
-              small
-            />
-            <span className="game-quantity">{game.quantity}개</span>
-            <div className="game-outcome">
-              <Badge result={ticket.results[i]} />
-              <strong
-                className={
-                  ticket.results[i].status === "won" ? "text-teal" : "muted"
+          <div className="ticket-game-entry" key={game.id ?? i}>
+            <div className="ticket-game">
+              <span className="game-index">
+                {i < 26 ? String.fromCharCode(65 + i) : i + 1}
+              </span>
+              <Numbers
+                numbers={game.numbers}
+                matched={
+                  ["pending", "missing"].includes(ticket.results[i].status)
+                    ? undefined
+                    : ticket.results[i].matchedNumbers
                 }
-              >
-                {money(ticket.results[i].prizeTotal)}
-              </strong>
+                small
+              />
+              <span className="game-quantity">{game.quantity}개</span>
+              <div className="game-outcome">
+                <Badge result={ticket.results[i]} />
+                <strong
+                  className={
+                    ticket.results[i].status === "won" ? "text-teal" : "muted"
+                  }
+                >
+                  {money(ticket.results[i].prizeTotal)}
+                </strong>
+              </div>
             </div>
+            {renderGameActions && (
+              <div className="ticket-game-actions">
+                {renderGameActions(game, i)}
+              </div>
+            )}
           </div>
         ))}
       </div>

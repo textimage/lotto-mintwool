@@ -3,13 +3,22 @@ import { mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { applyMigrations } from "./migrations.js";
+import { numberCombinationKey, validateNumbers } from "../shared/domain.js";
 import type {
   Draw,
   Favorite,
   PurchaseTicket,
   Settings,
   SyncJob,
+  EnsureFavoriteResponse,
 } from "../shared/domain.js";
+
+export class FavoriteDuplicateError extends Error {
+  constructor() {
+    super("이미 나의 번호에 저장된 조합입니다. 기존 항목을 수정해 주세요.");
+    this.name = "FavoriteDuplicateError";
+  }
+}
 
 export class Store {
   readonly sql: Database.Database;
@@ -118,11 +127,70 @@ export class Store {
     id: string = randomUUID(),
     dates: { createdAt?: string; updatedAt?: string } = {},
   ): Favorite {
+    const normalized = { ...input, numbers: validateNumbers(input.numbers) };
+    return this.sql
+      .transaction(() => {
+        const old = this.favorite(id, userId);
+        const key = numberCombinationKey(normalized.numbers);
+        if (
+          (!old || numberCombinationKey(old.numbers) !== key) &&
+          this.favoriteByNumbers(userId, normalized.numbers, id)
+        )
+          throw new FavoriteDuplicateError();
+        return this.writeFavorite(userId, normalized, id, dates);
+      })
+      .immediate();
+  }
+  favoriteByNumbers(userId: string, numbers: number[], excludeId?: string) {
+    const key = numberCombinationKey(numbers);
+    return this.favorites(userId).find(
+      (favorite) =>
+        favorite.id !== excludeId &&
+        numberCombinationKey(favorite.numbers) === key,
+    );
+  }
+  ensureFavorite(userId: string, numbers: number[]): EnsureFavoriteResponse {
+    const normalized = validateNumbers(numbers);
+    return this.sql
+      .transaction(() => {
+        const existing = this.favoriteByNumbers(userId, normalized);
+        if (existing) return { favorite: existing, created: false };
+        return {
+          favorite: this.writeFavorite(
+            userId,
+            { numbers: normalized, name: "", memo: "" },
+            randomUUID(),
+          ),
+          created: true,
+        };
+      })
+      .immediate();
+  }
+  // Personal backup restore preserves legacy duplicate combinations.
+  restoreFavorite(
+    userId: string,
+    input: Pick<Favorite, "name" | "numbers" | "memo">,
+    id: string,
+    dates: { createdAt?: string; updatedAt?: string } = {},
+  ): Favorite {
+    return this.writeFavorite(
+      userId,
+      { ...input, numbers: validateNumbers(input.numbers) },
+      id,
+      dates,
+    );
+  }
+  private writeFavorite(
+    userId: string,
+    input: Pick<Favorite, "name" | "numbers" | "memo">,
+    id: string,
+    dates: { createdAt?: string; updatedAt?: string } = {},
+  ): Favorite {
     const old = this.favorite(id, userId);
     const now = new Date().toISOString();
     this.sql
       .prepare(
-        "INSERT INTO favorites VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,numbers=excluded.numbers,memo=excluded.memo,updated_at=excluded.updated_at",
+        "INSERT INTO favorites VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,numbers=excluded.numbers,memo=excluded.memo,updated_at=excluded.updated_at WHERE favorites.user_id=excluded.user_id",
       )
       .run(
         id,
@@ -133,7 +201,9 @@ export class Store {
         dates.createdAt ?? old?.createdAt ?? now,
         dates.updatedAt ?? now,
       );
-    return this.favorite(id, userId)!;
+    const saved = this.favorite(id, userId);
+    if (!saved) throw new Error("다른 계정의 번호 ID와 겹칩니다.");
+    return saved;
   }
   deleteFavorite(id: string, userId: string) {
     return this.sql

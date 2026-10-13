@@ -33,11 +33,13 @@ import {
   nextPurchaseRound,
   roundForDate,
   favoriteLabel,
+  numberCombinationKey,
   type GroupedPurchases,
   type Favorite,
   type Draw,
   type TicketView,
   type PurchaseGame,
+  type EnsureFavoriteResponse,
 } from "../../shared/domain";
 import {
   api,
@@ -46,6 +48,7 @@ import {
   useApi,
   useApp,
   useAction,
+  useMediaQuery,
   download,
   syncPollingInterval,
   type Meta,
@@ -296,7 +299,10 @@ export function Favorites() {
                   <button
                     className="button subtle"
                     aria-label={favoriteLabel(favorite) + " 당첨이력"}
-                    onClick={() => setHistory(favorite)}
+                    onClick={(event) => {
+                      event.currentTarget.focus({ preventScroll: true });
+                      setHistory(favorite);
+                    }}
                   >
                     <Target size={16} />
                     당첨이력
@@ -374,7 +380,8 @@ export function Favorites() {
       {history && (
         <HistoryDialog
           key={history.id}
-          favorite={history}
+          numbers={history.numbers}
+          description={favoriteLabel(history)}
           close={() => setHistory(null)}
         />
       )}
@@ -454,6 +461,7 @@ export function FavoriteForm({
 
 export function Purchases() {
   const location = useLocation();
+  const isMobile = useMediaQuery("(max-width: 760px)");
   const [page, setPage] = useState(1);
   const [month, setMonth] = useState("");
   const [round, setRound] = useState(() => {
@@ -462,11 +470,17 @@ export function Purchases() {
   });
   const [status, setStatus] = useState("");
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  useEffect(() => {
+    if (isMobile) {
+      setMonth("");
+      setPage(1);
+    }
+  }, [isMobile]);
   useEffect(() => setExpanded({}), [month, round, status]);
   const query = new URLSearchParams({
     page: String(page),
     groupBy: "draw",
-    ...(month ? { month } : {}),
+    ...(!isMobile && month ? { month } : {}),
     ...(round ? { drawNo: round } : {}),
     ...(status ? { status } : {}),
   });
@@ -478,8 +492,57 @@ export function Purchases() {
     favorite?: Favorite;
   } | null>(null);
   const [qr, setQr] = useState(false);
+  const [history, setHistory] = useState<{
+    numbers: number[];
+    description: string;
+  } | null>(null);
   const action = useAction();
-  const { refresh, toast } = useApp();
+  const saveAction = useAction();
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [saved, setSaved] = useState<Record<string, number>>({});
+  const favorites = useApi<{ favorites: Favorite[] }>("/favorites");
+  const { revision, refresh, toast } = useApp();
+  const revisionRef = useRef(revision);
+  revisionRef.current = revision;
+  const savedKeys = new Set(
+    favorites.data?.favorites.map((favorite) =>
+      numberCombinationKey(favorite.numbers),
+    ),
+  );
+  // Keep successful writes visible until a subsequent favorites read completes.
+  for (const [key, savedRevision] of Object.entries(saved)) {
+    if (
+      favorites.dataRevision === null ||
+      favorites.dataRevision < savedRevision
+    )
+      savedKeys.add(key);
+  }
+  function saveNumbers(numbers: number[]) {
+    const key = numberCombinationKey(numbers);
+    void saveAction.run(async () => {
+      setSavingKey(key);
+      try {
+        const result = await api<EnsureFavoriteResponse>(
+          "/favorites/ensure",
+          "POST",
+          { numbers: [...numbers] },
+        );
+        setSaved((current) => ({
+          ...current,
+          [numberCombinationKey(result.favorite.numbers)]:
+            revisionRef.current + 1,
+        }));
+        refresh();
+        toast(
+          result.created
+            ? "나의 번호에 저장했습니다."
+            : "이미 나의 번호에 저장된 조합입니다.",
+        );
+      } finally {
+        setSavingKey(null);
+      }
+    });
+  }
   const navigate = useNavigate();
   useEffect(() => {
     const state = location.state as {
@@ -517,18 +580,20 @@ export function Purchases() {
           수동 등록
         </button>
       </PageTitle>
-      <div className="card filter-bar">
-        <label>
-          추첨 월
-          <input
-            type="month"
-            value={month}
-            onChange={(e) => {
-              setMonth(e.target.value);
-              setPage(1);
-            }}
-          />
-        </label>
+      <div className="card filter-bar purchase-filters">
+        {!isMobile && (
+          <label>
+            추첨 월
+            <input
+              type="month"
+              value={month}
+              onChange={(e) => {
+                setMonth(e.target.value);
+                setPage(1);
+              }}
+            />
+          </label>
+        )}
         <label>
           회차
           <input
@@ -561,25 +626,38 @@ export function Purchases() {
             <option value="unpriced">배당 산정 불가</option>
           </select>
         </label>
-        <button
-          className="button subtle filter-reset"
-          onClick={() => {
-            setMonth("");
-            setRound("");
-            setStatus("");
-            setPage(1);
-          }}
-        >
-          초기화
-        </button>
-        {data && (
-          <span className="filter-count">
-            총 <strong>{data.total.toLocaleString()}</strong>회차 · 구매번호수{" "}
-            <strong>{data.totalGames.toLocaleString()}</strong>개
-          </span>
-        )}
+        <div className="purchase-filter-footer">
+          <button
+            className="button subtle filter-reset"
+            onClick={() => {
+              setMonth("");
+              setRound("");
+              setStatus("");
+              setPage(1);
+            }}
+          >
+            초기화
+          </button>
+          {data && (
+            <span className="filter-count">
+              총 <strong>{data.total.toLocaleString()}</strong>회차 · 구매번호수{" "}
+              <strong>{data.totalGames.toLocaleString()}</strong>개
+            </span>
+          )}
+        </div>
       </div>
       {error && <ErrorBox error={error} />}
+      {favorites.error && (
+        <div className="purchase-favorites-error">
+          <ErrorBox
+            error={`저장 여부를 확인하지 못했습니다. ${favorites.error}`}
+          />
+          <button className="button subtle" onClick={refresh}>
+            다시 확인
+          </button>
+        </div>
+      )}
+      {saveAction.error && <ErrorBox error={saveAction.error} />}
       {!data && loading ? (
         <Loading />
       ) : (
@@ -632,6 +710,59 @@ export function Purchases() {
                           key={ticket.id}
                           ticket={ticket}
                           showRound={false}
+                          renderGameActions={(game, index) => {
+                            const key = numberCombinationKey(game.numbers);
+                            const label =
+                              index < 26
+                                ? String.fromCharCode(65 + index)
+                                : String(index + 1);
+                            const description = `제${ticket.drawNo}회 · ${label} 조합`;
+                            const isSaved = savedKeys.has(key);
+                            const saving = savingKey === key;
+                            return (
+                              <>
+                                <button
+                                  className="button subtle"
+                                  aria-label={`${description} 과거 당첨 조회`}
+                                  onClick={(event) => {
+                                    event.currentTarget.focus({
+                                      preventScroll: true,
+                                    });
+                                    setHistory({
+                                      numbers: [...game.numbers],
+                                      description,
+                                    });
+                                  }}
+                                >
+                                  <Target size={16} />
+                                  과거 당첨 조회
+                                </button>
+                                <button
+                                  className={
+                                    "button " +
+                                    (isSaved ? "primary-soft" : "subtle")
+                                  }
+                                  disabled={saveAction.busy || isSaved}
+                                  aria-label={`${description} ${isSaved ? "나의 번호에 저장됨" : "나의 번호에 저장"}`}
+                                  onClick={() => saveNumbers(game.numbers)}
+                                >
+                                  {saving ? (
+                                    <LoaderCircle className="spin" size={16} />
+                                  ) : (
+                                    <Heart
+                                      size={16}
+                                      fill={isSaved ? "currentColor" : "none"}
+                                    />
+                                  )}
+                                  {saving
+                                    ? "저장 중"
+                                    : isSaved
+                                      ? "저장됨"
+                                      : "나의 번호에 저장"}
+                                </button>
+                              </>
+                            );
+                          }}
                           actions={
                             <div className="inline">
                               <button
@@ -691,6 +822,13 @@ export function Purchases() {
       )}
       {form && <PurchaseForm {...form} close={() => setForm(null)} />}
       {qr && <QrForm close={() => setQr(false)} />}
+      {history && (
+        <HistoryDialog
+          numbers={history.numbers}
+          description={history.description}
+          close={() => setHistory(null)}
+        />
+      )}
     </>
   );
 }

@@ -31,6 +31,10 @@ export interface Favorite {
   createdAt: string;
   updatedAt: string;
 }
+export interface EnsureFavoriteResponse {
+  favorite: Favorite;
+  created: boolean;
+}
 export interface PurchaseGame {
   id?: string;
   numbers: number[];
@@ -140,6 +144,10 @@ export function validateNumbers(value: unknown): number[] {
   if (new Set(value).size !== 6)
     throw new Error("한 게임 안에 같은 번호를 두 번 넣을 수 없습니다.");
   return [...value].sort((a, b) => a - b);
+}
+
+export function numberCombinationKey(numbers: number[]): string {
+  return validateNumbers(numbers).join(",");
 }
 
 export function parseNumbers(input: string): number[] {

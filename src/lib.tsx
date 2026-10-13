@@ -107,6 +107,19 @@ export function AppProvider({
   );
 }
 export const useApp = () => useContext(Context);
+export function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(
+    () => window.matchMedia(query).matches,
+  );
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
 export function syncPollingInterval(
   data: {
     latestJob?: Meta["latestJob"];
@@ -124,6 +137,7 @@ export function useApi<T>(
 ) {
   const { revision } = useApp();
   const [data, setData] = useState<T | null>(null);
+  const [dataRevision, setDataRevision] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -136,6 +150,7 @@ export function useApi<T>(
         if (!cancelled) {
           latestResult = result;
           setData(result);
+          setDataRevision(revision);
           setError("");
         }
       } catch (error) {
@@ -163,7 +178,7 @@ export function useApi<T>(
       clearTimeout(timer);
     };
   }, [path, revision, polling]);
-  return { data, error, loading };
+  return { data, error, loading, dataRevision };
 }
 export function useAction() {
   const [busy, setBusy] = useState(false);
