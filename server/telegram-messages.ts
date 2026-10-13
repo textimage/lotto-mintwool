@@ -8,11 +8,11 @@ import { Store } from "./db.js";
 import { history, ticketView } from "./records.js";
 
 export const HELP = [
-  "로또 기록장 봇입니다.",
+  "Mintwool Lotto Bot!",
   "번호 6개를 공백 또는 쉼표로 보내면 과거 당첨 이력을 요약합니다.",
   "예: 1 7 13 22 35 44",
   "로또 용지 사진을 보내면 QR을 읽어 구매내역에 즉시 등록합니다. 사진 한 장에 복권 한 장을 담아 주세요.",
-  "토요일 21시에는 그날 회차의 구매 결과를 보내고, 집계 중이면 확정 후 추가로 알려드립니다.",
+  "토요일 21시부터 그날 회차의 구매 결과를 확인하고, 모두 확정되면 알려드립니다.",
   "/help — 사용법",
 ].join("\n");
 const money = (amount: number) => amount.toLocaleString("ko-KR") + "원";
@@ -22,7 +22,7 @@ export function historyMessage(store: Store, text: string): string {
   const lines = [
     "과거 당첨 대조",
     `번호: ${data.numbers.join(" ")}`,
-    `대조한 회차: ${data.compared}회`,
+    `대조한 총회차: ${data.compared}회`,
   ];
   if (!data.compared) lines.push("아직 수집된 당첨 기록이 없습니다.");
   else if (data.bestRank === null) lines.push("당첨 기록이 없습니다.");
@@ -40,7 +40,6 @@ export function historyMessage(store: Store, text: string): string {
         `${row.draw.drawNo}회 (${row.draw.drawDate}) · ${row.result.rank}등`,
       );
   }
-  lines.push("과거 대조 결과이며 실제 구매 당첨 기록에 합산되지 않습니다.");
   return lines.join("\n");
 }
 

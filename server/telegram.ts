@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { Store } from "./db.js";
 import { SyncEngine } from "./sync.js";
-import { purchaseInput, qrPurchaseInput } from "./records.js";
+import { purchaseInput, qrPurchaseInput, ticketView } from "./records.js";
 import {
   TelegramApi,
   TelegramError,
@@ -42,6 +42,7 @@ export interface TelegramUpdate {
 }
 interface OutboxRow {
   id: number;
+  delivery_key: string;
   text: string;
   attempts: number;
   next_attempt_at: number;
@@ -50,6 +51,15 @@ interface ReportRow {
   draw_no: number;
   final_queued: number;
   next_refresh_at: number;
+}
+
+function settledReport(text: string): boolean {
+  return (
+    /당첨번호: \d/.test(text) &&
+    !/결과 미수집|추첨 대기|당첨금 집계 중|미확정 \d+개 별도|배당 산정 불가/.test(
+      text,
+    )
+  );
 }
 
 export function telegramConfig(
@@ -139,7 +149,102 @@ export class TelegramBot {
           "INSERT OR IGNORE INTO telegram_accounts(scope,activated_at) VALUES(?,?)",
         )
         .run(this.scope, this.now().getTime());
+      this.restoreReports(this.now());
     })();
+  }
+  private reportReady(drawNo: number, now: Date): boolean {
+    return (
+      this.store.draw(drawNo)?.status === "complete" &&
+      this.store
+        .tickets(this.userId)
+        .filter((ticket) => ticket.drawNo === drawNo)
+        .every(
+          (ticket) => ticketView(this.store, ticket, now).unsettledGames === 0,
+        )
+    );
+  }
+  private deferReport(drawNo: number, now: Date) {
+    this.store.sql
+      .prepare(
+        "DELETE FROM telegram_outbox WHERE scope=? AND delivery_key IN (?,?) AND sent_at IS NULL",
+      )
+      .run(this.scope, `draw:${drawNo}:initial`, `draw:${drawNo}:final`);
+    this.store.sql
+      .prepare(
+        "UPDATE telegram_reports SET final_queued=0,next_refresh_at=? WHERE scope=? AND draw_no=?",
+      )
+      .run(now.getTime(), this.scope, drawNo);
+  }
+  private restoreReports(now: Date) {
+    const reports = this.store.sql
+      .prepare("SELECT * FROM telegram_reports WHERE scope=?")
+      .all(this.scope) as ReportRow[];
+    for (const report of reports) {
+      const initialKey = `draw:${report.draw_no}:initial`;
+      const finalKey = `draw:${report.draw_no}:final`;
+      const rows = (key: string) =>
+        this.store.sql
+          .prepare(
+            "SELECT text,sent_at FROM telegram_outbox WHERE scope=? AND delivery_key=? ORDER BY part",
+          )
+          .all(this.scope, key) as { text: string; sent_at: number | null }[];
+      const initial = rows(initialKey);
+      if (initial.length) {
+        const text = initial.map((row) => row.text).join("\n");
+        const settled = settledReport(text);
+        if (settled && !rows(finalKey).length) {
+          // Older versions sent settled results using the initial key. Preserve
+          // their sent parts and retry metadata rather than enqueueing duplicates.
+          this.store.sql
+            .prepare(
+              "UPDATE telegram_outbox SET delivery_key=? WHERE scope=? AND delivery_key=?",
+            )
+            .run(finalKey, this.scope, initialKey);
+          this.store.sql
+            .prepare(
+              "UPDATE telegram_outbox SET text=replace(text,' 구매 결과',' 확정 구매 결과') WHERE scope=? AND delivery_key=? AND part=0 AND sent_at IS NULL",
+            )
+            .run(this.scope, finalKey);
+        } else {
+          this.store.sql
+            .prepare(
+              "DELETE FROM telegram_outbox WHERE scope=? AND delivery_key=? AND sent_at IS NULL",
+            )
+            .run(this.scope, initialKey);
+          if (settled && initial.every((row) => row.sent_at !== null)) {
+            this.store.sql
+              .prepare(
+                "DELETE FROM telegram_outbox WHERE scope=? AND delivery_key=? AND sent_at IS NULL",
+              )
+              .run(this.scope, finalKey);
+            this.store.sql
+              .prepare(
+                "UPDATE telegram_reports SET final_queued=1 WHERE scope=? AND draw_no=?",
+              )
+              .run(this.scope, report.draw_no);
+            continue;
+          }
+        }
+      }
+      const final = rows(finalKey);
+      if (final.length && final.every((row) => row.sent_at !== null)) {
+        // A deferred multipart report may retain only its sent prefix. Its
+        // final_queued=0 state must survive restart so remaining parts are rebuilt.
+        continue;
+      } else if (
+        final.length &&
+        this.reportReady(report.draw_no, now) &&
+        settledReport(final.map((row) => row.text).join("\n"))
+      ) {
+        this.store.sql
+          .prepare(
+            "UPDATE telegram_reports SET final_queued=1 WHERE scope=? AND draw_no=?",
+          )
+          .run(this.scope, report.draw_no);
+      } else if (initial.length || final.length) {
+        this.deferReport(report.draw_no, now);
+      }
+    }
   }
   async start() {
     let failures = 0;
@@ -387,27 +492,16 @@ export class TelegramBot {
           .prepare("SELECT 1 FROM telegram_reports WHERE scope=? AND draw_no=?")
           .get(this.scope, due.drawNo);
         if (!exists) {
-          const complete = this.store.draw(due.drawNo)?.status === "complete";
-          this.queue(
-            `draw:${due.drawNo}:initial`,
-            roundReport(
-              this.store,
-              this.userId,
-              due.drawNo,
-              this.config.origin,
-              now,
-            ),
-          );
           this.store.sql
             .prepare("INSERT INTO telegram_reports VALUES(?,?,?,?,?)")
             .run(
               this.scope,
               due.drawNo,
               now.getTime(),
-              Number(complete),
+              0,
               nextRefresh(due.drawNo, now),
             );
-          refresh = true;
+          refresh = !this.reportReady(due.drawNo, now);
         }
       }
       const pending = this.store.sql
@@ -416,7 +510,7 @@ export class TelegramBot {
         )
         .all(this.scope) as ReportRow[];
       for (const report of pending) {
-        if (this.store.draw(report.draw_no)?.status === "complete") {
+        if (this.reportReady(report.draw_no, now)) {
           this.queue(
             `draw:${report.draw_no}:final`,
             roundReport(
@@ -482,6 +576,13 @@ export class TelegramBot {
       const wait = this.lastSentAt + 1000 - Date.now();
       if (wait > 0) await this.pause(wait);
       if (this.stopped) return;
+      const report = /^draw:(\d+):(initial|final)$/.exec(row.delivery_key);
+      if (report && !this.reportReady(Number(report[1]), this.now())) {
+        this.store.sql.transaction(() => {
+          this.deferReport(Number(report[1]), this.now());
+        })();
+        continue;
+      }
       try {
         const message = await this.api.call<{ message_id: number }>(
           "sendMessage",

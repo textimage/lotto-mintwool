@@ -145,6 +145,39 @@ const message = (id: number, text = "1 2 3 4 8 9"): TelegramUpdate => ({
   message: { from: { id: 42 }, chat: { id: 42, type: "private" }, text },
 });
 
+function legacyReport(
+  h: Awaited<ReturnType<typeof harness>>,
+  key: "initial" | "final",
+  text: string | string[],
+  finalQueued: number,
+  sentParts = 0,
+) {
+  const scope = (
+    h.store.sql.prepare("SELECT scope FROM telegram_accounts").get() as {
+      scope: string;
+    }
+  ).scope;
+  h.store.sql
+    .prepare("INSERT INTO telegram_reports VALUES(?,?,?,?,?)")
+    .run(scope, 1245, Date.parse("2026-10-10T21:00:00+09:00"), finalQueued, 0);
+  const parts = typeof text === "string" ? splitMessage(text) : text;
+  parts.forEach((part, i) =>
+    h.store.sql
+      .prepare(
+        "INSERT INTO telegram_outbox(scope,delivery_key,part,text,sent_at,attempts) VALUES(?,?,?,?,?,?)",
+      )
+      .run(scope, `draw:1245:${key}`, i, part, i < sentParts ? 1 : null, 3),
+  );
+}
+
+function reportState(h: Awaited<ReturnType<typeof harness>>) {
+  return h.store.sql
+    .prepare("SELECT final_queued FROM telegram_reports WHERE draw_no=1245")
+    .get() as {
+    final_queued: number;
+  };
+}
+
 test("configuration is opt-in, validates IDs and defaults to the site bootstrap username", () => {
   assert.equal(telegramConfig({}, "https://lotto.example"), null);
   assert.throws(() =>
@@ -189,7 +222,16 @@ test("only the fixed user's private chat is accepted; unauthorized images are ne
     assert.equal(h.messages().length, 0);
     assert.equal(h.api.downloads.length, 0);
     await h.bot.handleUpdate(message(4, "/start"));
-    assert.match(h.messages()[0], /로또 기록장 봇/);
+    assert.equal(h.messages()[0].split("\n")[0], "Mintwool Lotto Bot!");
+    assert.ok(
+      h
+        .messages()[0]
+        .includes(
+          "토요일 21시부터 그날 회차의 구매 결과를 확인하고, 모두 확정되면 알려드립니다.",
+        ),
+    );
+    await h.bot.handleUpdate(message(5, "/help"));
+    assert.equal(h.messages()[1], h.messages()[0]);
   } finally {
     await h.close();
   }
@@ -201,6 +243,8 @@ test("history replies use the web API's summary, best three rounds and never cre
     for (const no of [1, 2, 3, 4]) h.store.upsertDraw(draw(no));
     await h.bot.handleUpdate(message(1, "1,2,3,4,8,9"));
     const response = h.messages()[0];
+    assert.match(response, /대조한 총회차: 4회/);
+    assert.ok(!response.includes("과거 대조 결과이며"));
     assert.match(response, /최고 당첨 순위: 4등/);
     assert.match(response, /4등 4회/);
     assert.match(response, /4회 \(/);
@@ -233,9 +277,13 @@ test("empty data, no hits and malformed numbers have explicit history replies", 
   try {
     await h.bot.handleUpdate(message(1));
     assert.match(h.messages()[0], /수집된 당첨 기록이 없습니다/);
+    assert.match(h.messages()[0], /대조한 총회차: 0회/);
+    assert.ok(!h.messages()[0].includes("과거 대조 결과이며"));
     h.store.upsertDraw(draw());
     await h.bot.handleUpdate(message(2, "30 31 32 33 34 35"));
     assert.match(h.messages()[1], /당첨 기록이 없습니다/);
+    assert.match(h.messages()[1], /대조한 총회차: 1회/);
+    assert.ok(!h.messages()[1].includes("과거 대조 결과이며"));
     for (const [i, text] of [
       "1 1 2 3 4 5",
       "0 1 2 3 4 5",
@@ -425,20 +473,22 @@ test("21:00 reports all current-round games, quantities and gross prizes; exclud
     assert.equal(h.api.sends.length, 1);
     const report = h.api.sends[0];
     assert.match(report, /제1245회/);
+    assert.match(report, /확정 구매 결과/);
     assert.match(report, /구매번호수: 4개/);
-    assert.match(report, /150,000원/);
+    assert.match(report, /확정 세전 당첨금: 150,000원/);
+    assert.match(report, /4등 · 4등 당첨 · 150,000원/);
     assert.match(report, /낙첨/);
     assert.match(report, /×3/);
     assert.ok(!report.includes("8 9 10 11 12 13"));
     await h.bot.tick();
     assert.equal(h.api.sends.length, 1);
-    assert.equal(h.syncCalls(), 1);
+    assert.equal(h.syncCalls(), 0);
   } finally {
     await h.close();
   }
 });
 
-test("missing results then numbers only then complete produces one initial and one final report", async () => {
+test("missing results and numbers only stay silent until one complete report is sent", async () => {
   const h = await harness();
   try {
     h.ticket();
@@ -446,8 +496,8 @@ test("missing results then numbers only then complete produces one initial and o
     h.setTime("2026-10-10T21:00:00+09:00");
     await h.bot.tick();
     await delay(0);
-    assert.match(h.api.sends[0], /결과 미수집/);
-    assert.match(h.api.sends[0], /미확정 1개 별도/);
+    assert.equal(h.api.sends.length, 0);
+    assert.equal(h.messages().length, 0);
     const partial = draw();
     partial.status = "numbers_only";
     partial.ranks.forEach((r) => {
@@ -456,18 +506,23 @@ test("missing results then numbers only then complete produces one initial and o
     });
     h.store.upsertDraw(partial);
     await h.bot.tick();
-    assert.equal(h.api.sends.length, 1);
+    assert.equal(h.api.sends.length, 0);
     h.setTime("2026-10-10T21:15:00+09:00");
     await h.bot.tick();
     await delay(0);
     assert.equal(h.syncCalls(), 2);
     h.store.upsertDraw(draw());
     await h.bot.tick();
-    assert.equal(h.api.sends.length, 2);
-    assert.match(h.api.sends[1], /확정 구매 결과/);
-    assert.match(h.api.sends[1], /50,000원/);
+    assert.equal(h.api.sends.length, 1);
+    assert.match(h.api.sends[0], /확정 구매 결과/);
+    assert.match(h.api.sends[0], /확정 세전 당첨금: 50,000원/);
+    assert.ok(!/미확정|집계 중/.test(h.api.sends[0]));
+    const syncCalls = h.syncCalls();
+    h.setTime("2026-10-12T03:00:00+09:00");
     await h.bot.tick();
-    assert.equal(h.api.sends.length, 2);
+    await delay(0);
+    assert.equal(h.api.sends.length, 1);
+    assert.equal(h.syncCalls(), syncCalls);
   } finally {
     await h.close();
   }
@@ -496,14 +551,276 @@ test("numbers-only report shows known ranks without presenting unconfirmed payou
   }
 });
 
-test("no purchases still reports draw numbers; first activation never sends historical reports", async () => {
+test("complete draws with tallying or unpriced purchased games wait for settlement", async () => {
+  for (const payout of [null, 0]) {
+    const h = await harness();
+    try {
+      h.ticket();
+      const incomplete = draw();
+      const rank = incomplete.ranks.find((r) => r.rank === 4)!;
+      rank.prizePerGame = payout;
+      h.store.upsertDraw(incomplete);
+      h.setTime("2026-10-10T21:00:00+09:00");
+      await h.bot.tick();
+      await delay(0);
+      assert.equal(h.api.sends.length, 0);
+      assert.equal(h.messages().length, 0);
+      assert.equal(reportState(h).final_queued, 0);
+      assert.equal(h.syncCalls(), 1);
+      h.store.upsertDraw(draw());
+      await h.bot.tick();
+      assert.equal(h.api.sends.length, 1);
+      assert.match(h.api.sends[0], /확정 세전 당첨금: 50,000원/);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("legacy intermediate replies are canceled whether unsent or already sent", async () => {
+  for (const sentParts of [0, 1]) {
+    const h = await harness();
+    try {
+      h.ticket();
+      legacyReport(
+        h,
+        "initial",
+        roundReport(h.store, h.userId, 1245, h.bot.config.origin, new Date()),
+        0,
+        sentParts,
+      );
+      h.setTime("2026-10-10T21:00:00+09:00");
+      await h.bot.initialize();
+      await h.bot.flush();
+      assert.equal(h.api.sends.length, 0);
+      assert.equal(h.messages().length, sentParts);
+      await h.bot.handleUpdate(message(1, "/help"));
+      await h.bot.flush();
+      assert.match(h.api.sends[0], /Mintwool Lotto Bot!/);
+      h.store.upsertDraw(draw());
+      await h.bot.tick();
+      assert.equal(h.api.sends.length, 2);
+      assert.match(h.api.sends[1], /확정 구매 결과/);
+      await h.bot.initialize();
+      await h.bot.tick();
+      assert.equal(h.api.sends.length, 2);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("legacy settled initial and final reports preserve completed deliveries", async () => {
+  for (const key of ["initial", "final"] as const) {
+    const h = await harness();
+    try {
+      h.store.upsertDraw(draw());
+      h.ticket();
+      legacyReport(
+        h,
+        key,
+        roundReport(
+          h.store,
+          h.userId,
+          1245,
+          h.bot.config.origin,
+          new Date(),
+          key === "final",
+        ),
+        1,
+        1,
+      );
+      h.setTime("2026-10-10T21:00:00+09:00");
+      await h.bot.initialize();
+      await h.bot.tick();
+      assert.equal(h.api.sends.length, 0);
+      assert.equal(h.messages().length, 1);
+      assert.equal(h.syncCalls(), 0);
+      assert.equal(reportState(h).final_queued, 1);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("legacy unsent settled reports keep their delivery and retry metadata", async () => {
+  for (const key of ["initial", "final"] as const) {
+    const h = await harness();
+    try {
+      h.store.upsertDraw(draw());
+      h.ticket();
+      legacyReport(
+        h,
+        key,
+        roundReport(
+          h.store,
+          h.userId,
+          1245,
+          h.bot.config.origin,
+          new Date(),
+          key === "final",
+        ),
+        1,
+      );
+      h.setTime("2026-10-10T21:00:00+09:00");
+      h.store.sql
+        .prepare("UPDATE telegram_outbox SET next_attempt_at=?")
+        .run(Date.parse("2026-10-10T21:00:30+09:00"));
+      await h.bot.initialize();
+      await h.bot.tick();
+      assert.equal(h.api.sends.length, 0);
+      const row = h.store.sql
+        .prepare(
+          "SELECT delivery_key,attempts,next_attempt_at FROM telegram_outbox",
+        )
+        .get() as {
+        delivery_key: string;
+        attempts: number;
+        next_attempt_at: number;
+      };
+      assert.equal(row.delivery_key, "draw:1245:final");
+      assert.equal(row.attempts, 3);
+      assert.equal(
+        row.next_attempt_at,
+        Date.parse("2026-10-10T21:00:30+09:00"),
+      );
+      h.setTime("2026-10-10T21:00:30+09:00");
+      await h.bot.flush();
+      assert.equal(h.api.sends.length, 1);
+      assert.match(h.api.sends[0], /확정 구매 결과/);
+      assert.match(h.api.sends[0], /50,000원/);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("legacy finals defer on restart and rebuild stale intermediate text once ready", async () => {
+  for (const readyAtRestart of [false, true]) {
+    const h = await harness();
+    try {
+      h.ticket();
+      legacyReport(
+        h,
+        "final",
+        roundReport(
+          h.store,
+          h.userId,
+          1245,
+          h.bot.config.origin,
+          new Date(),
+          true,
+        ),
+        1,
+      );
+      if (readyAtRestart) h.store.upsertDraw(draw());
+      h.setTime("2026-10-10T21:00:00+09:00");
+      await h.bot.initialize();
+      await h.bot.flush();
+      assert.equal(h.api.sends.length, 0);
+      assert.equal(h.messages().length, 0);
+      assert.equal(reportState(h).final_queued, 0);
+      h.store.upsertDraw(draw());
+      await h.bot.tick();
+      assert.equal(h.api.sends.length, 1);
+      assert.match(h.api.sends[0], /50,000원/);
+      assert.ok(!/미수집|미확정|집계 중/.test(h.api.sends[0]));
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("delivery rechecks settlement after queueing and does not block ordinary replies", async () => {
+  const h = await harness();
+  try {
+    h.ticket();
+    h.store.upsertDraw(draw());
+    h.setTime("2026-10-10T21:00:00+09:00");
+    h.api.error = new TelegramError(429, 30);
+    await h.bot.tick();
+    assert.equal(reportState(h).final_queued, 1);
+    const incomplete = draw();
+    incomplete.ranks.find((rank) => rank.rank === 4)!.numWinners = null;
+    h.store.upsertDraw(incomplete);
+    h.setTime("2026-10-10T21:00:30+09:00");
+    await h.bot.handleUpdate(message(1, "/help"));
+    await h.bot.flush();
+    assert.equal(h.api.sends.length, 1);
+    assert.match(h.api.sends[0], /Mintwool Lotto Bot!/);
+    assert.equal(reportState(h).final_queued, 0);
+    h.store.upsertDraw(draw());
+    await h.bot.tick();
+    assert.equal(h.api.sends.length, 2);
+    assert.match(h.api.sends[1], /확정 구매 결과/);
+  } finally {
+    await h.close();
+  }
+});
+
+test("deferred multipart finals survive restart without resending successful parts", async () => {
+  const h = await harness();
+  try {
+    h.store.upsertDraw(draw());
+    h.store.saveTicket(
+      h.userId,
+      purchaseInput(
+        h.store,
+        {
+          drawNo: 1245,
+          drawDate: draw().drawDate,
+          games: Array.from({ length: 100 }, () => ({
+            numbers: [1, 2, 3, 4, 8, 9],
+          })),
+        },
+        h.userId,
+      ),
+    );
+    const text = roundReport(
+      h.store,
+      h.userId,
+      1245,
+      h.bot.config.origin,
+      new Date(),
+      true,
+    );
+    const parts = splitMessage(text);
+    assert.ok(parts.length > 1);
+    legacyReport(h, "final", parts, 1, 1);
+    const partial = draw();
+    partial.ranks.find((rank) => rank.rank === 4)!.numWinners = null;
+    h.store.upsertDraw(partial);
+    h.setTime("2026-10-10T21:00:00+09:00");
+    await h.bot.initialize();
+    assert.equal(reportState(h).final_queued, 0);
+    assert.equal(h.messages().length, 1);
+    h.store.upsertDraw(draw());
+    await h.bot.initialize();
+    await h.bot.tick();
+    assert.deepEqual(h.api.sends, parts.slice(1));
+    assert.equal(h.messages().length, parts.length);
+    await h.bot.initialize();
+    await h.bot.tick();
+    assert.equal(h.api.sends.length, parts.length - 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("no purchases waits for complete draw numbers; first activation never sends historical reports", async () => {
   const h = await harness("2026-10-12T09:00:00+09:00");
   try {
     h.store.upsertDraw(draw());
     await h.bot.tick();
     assert.equal(h.messages().length, 0);
-    h.store.upsertDraw(draw(1246));
+    const partial = draw(1246);
+    partial.status = "numbers_only";
+    h.store.upsertDraw(partial);
     h.setTime("2026-10-17T21:00:00+09:00");
+    await h.bot.tick();
+    await delay(0);
+    assert.equal(h.api.sends.length, 0);
+    h.store.upsertDraw(draw(1246));
     await h.bot.tick();
     assert.match(h.api.sends[0], /등록된 구매내역 없음/);
     assert.match(h.api.sends[0], /당첨번호: 1 2 3 4 5 6/);
@@ -530,7 +847,7 @@ test("restart catches up only the most recent Saturday and restores inbox/outbox
       reports.map((r) => r.draw_no),
       [1245],
     );
-    assert.equal(second.messages().length, 2);
+    assert.equal(second.messages().length, 1);
     second.store.upsertDraw(draw());
     await second.bot.tick();
     await second.close();
@@ -538,7 +855,7 @@ test("restart catches up only the most recent Saturday and restores inbox/outbox
     try {
       await third.bot.tick();
       assert.equal(third.api.sends.length, 0);
-      assert.equal(third.messages().length, 3);
+      assert.equal(third.messages().length, 2);
     } finally {
       await third.close();
     }
@@ -806,7 +1123,7 @@ test("pending results switch from fifteen-minute retries to daily 03:00 retries"
     await h.bot.tick();
     await delay(0);
     assert.equal(h.syncCalls(), 3);
-    assert.equal(h.api.sends.length, 1);
+    assert.equal(h.api.sends.length, 0);
   } finally {
     await h.close();
   }
