@@ -1089,9 +1089,9 @@ function QrForm({ close }: { close: () => void }) {
     let disposed = false;
     setCameraError("");
     const begin = async () => {
-      const { BrowserQRCodeReader } = await import("@zxing/browser");
+      const { LottoQrReader } = await import("../qr-reader");
       if (disposed || !video.current) return;
-      const scanner = await new BrowserQRCodeReader().decodeFromVideoDevice(
+      const scanner = await new LottoQrReader(1000).decodeFromVideoDevice(
         undefined,
         video.current,
         (result, _error, scanner) => {
@@ -1140,8 +1140,8 @@ function QrForm({ close }: { close: () => void }) {
     const url = URL.createObjectURL(file);
     let qrFound = false;
     try {
-      const { BrowserQRCodeReader } = await import("@zxing/browser");
-      const result = await new BrowserQRCodeReader().decodeFromImageUrl(url);
+      const { LottoQrReader } = await import("../qr-reader");
+      const result = await new LottoQrReader().decodeFromImageUrl(url);
       qrFound = true;
       await decode(result.getText());
     } catch (error) {

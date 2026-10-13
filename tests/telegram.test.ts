@@ -31,6 +31,7 @@ import {
   splitMessage,
 } from "../server/telegram-messages.js";
 import { draw, qrSample, qrRootSample } from "./fixtures.js";
+import { noisyQrPixels } from "./qr-fixtures.js";
 
 class FakeApi implements TelegramTransport {
   sends: string[] = [];
@@ -1285,6 +1286,21 @@ test("real worker decodes PNG, JPEG and rotated photos; rejects blank/corrupt/in
       decoder.decode(Buffer.from("not-an-image")),
       /사진을 처리하지 못/,
     );
+  } finally {
+    await decoder.stop();
+  }
+});
+
+test("QR worker recovers a textured photo through the same denoising used by the browser", async () => {
+  const { pixels, width, height } = noisyQrPixels();
+  const photo = await sharp(Buffer.from(pixels), {
+    raw: { width, height, channels: 1 },
+  })
+    .png()
+    .toBuffer();
+  const decoder = new QrDecoder();
+  try {
+    assert.equal(await decoder.decode(photo), qrRootSample);
   } finally {
     await decoder.stop();
   }
