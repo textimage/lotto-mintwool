@@ -30,7 +30,7 @@ import {
   nextRefresh,
   splitMessage,
 } from "../server/telegram-messages.js";
-import { draw, qrSample } from "./fixtures.js";
+import { draw, qrSample, qrRootSample } from "./fixtures.js";
 
 class FakeApi implements TelegramTransport {
   sends: string[] = [];
@@ -1237,6 +1237,10 @@ test("real worker decodes PNG, JPEG and rotated photos; rejects blank/corrupt/in
   try {
     const png = await qrImage();
     assert.equal(await decoder.decode(png), qrSample);
+    assert.equal(
+      await decoder.decode(await qrImage(qrRootSample)),
+      qrRootSample,
+    );
     const jpeg = await sharp(png).rotate(90).jpeg({ quality: 90 }).toBuffer();
     assert.equal(await decoder.decode(jpeg), qrSample);
     const exif = await sharp(png)

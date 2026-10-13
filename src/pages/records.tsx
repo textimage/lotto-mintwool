@@ -1138,13 +1138,17 @@ function QrForm({ close }: { close: () => void }) {
     }
     setDecoding(true);
     const url = URL.createObjectURL(file);
+    let qrFound = false;
     try {
       const { BrowserQRCodeReader } = await import("@zxing/browser");
       const result = await new BrowserQRCodeReader().decodeFromImageUrl(url);
+      qrFound = true;
       await decode(result.getText());
-    } catch {
+    } catch (error) {
       setCameraError(
-        "사진에서 로또 QR을 찾지 못했습니다. QR이 크게 보이는 사진을 선택해 주세요.",
+        qrFound && error instanceof Error
+          ? error.message
+          : "사진에서 로또 QR을 찾지 못했습니다. QR이 크게 보이는 사진을 선택해 주세요.",
       );
     } finally {
       setDecoding(false);

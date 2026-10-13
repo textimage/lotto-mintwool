@@ -14,7 +14,7 @@ import {
   estimateAfterTaxPrize,
 } from "../shared/domain.js";
 import { normalizeDraw, Sources } from "../server/sources.js";
-import { draw, rawDraw, qrSample } from "./fixtures.js";
+import { draw, rawDraw, qrSample, qrRootSample } from "./fixtures.js";
 
 test("after-tax estimates use historical exemptions and progressive thresholds", () => {
   assert.equal(estimateAfterTaxPrize(null, "2026-10-10"), null);
@@ -181,6 +181,39 @@ test("QR supports one to five games, keeps identical games, rejects untrusted/in
   assert.throws(() => parseLottoQr("1245m010101040506"));
   assert.throws(() => parseLottoQr("1245m010203040546"));
   assert.throws(() => parseLottoQr("hello"));
+});
+test("QR root URLs support HTTP and HTTPS and preserve all five q games and ticket metadata", () => {
+  const payload = new URL(qrRootSample).searchParams.get("v")!;
+  const expected = {
+    drawNo: 1246,
+    games: [
+      { numbers: [8, 9, 15, 18, 23, 40], quantity: 1 },
+      { numbers: [3, 5, 13, 19, 27, 30], quantity: 1 },
+      { numbers: [12, 13, 26, 35, 40, 43], quantity: 1 },
+      { numbers: [1, 11, 17, 22, 31, 32], quantity: 1 },
+      { numbers: [13, 16, 25, 26, 38, 45], quantity: 1 },
+    ],
+    payload,
+  };
+  for (const raw of [
+    qrRootSample,
+    qrRootSample.replace("http:", "https:"),
+    payload,
+  ]) {
+    assert.deepEqual(parseLottoQr(raw), expected);
+  }
+  for (const raw of [
+    `https://qr.dhlottery.co.kr.evil.example/?v=${payload}`,
+    `https://qr.dhlottery.co.kr/other?v=${payload}`,
+    `https://www.dhlottery.co.kr/?v=${payload}`,
+    `https://qr.dhlottery.co.kr@evil.example/?v=${payload}`,
+    `https://evil.example@qr.dhlottery.co.kr/?v=${payload}`,
+    `https://qr.dhlottery.co.kr:444/?v=${payload}`,
+    "https://qr.dhlottery.co.kr/",
+    "https://qr.dhlottery.co.kr/?v=1246q080909182340",
+  ]) {
+    assert.throws(() => parseLottoQr(raw));
+  }
 });
 test("random combinations honor inclusions/exclusions and impossible requests fail", () => {
   const generated = generateNumbers(20, [7, 21], [1, 2, 3]);

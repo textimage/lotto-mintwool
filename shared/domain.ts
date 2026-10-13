@@ -405,12 +405,16 @@ export function parseLottoQr(input: string): {
   let payload = clean;
   if (/^https?:\/\//i.test(clean)) {
     const url = new URL(clean);
-    if (
-      !["dhlottery.co.kr", "www.dhlottery.co.kr", "m.dhlottery.co.kr"].includes(
-        url.hostname.toLowerCase(),
-      ) ||
-      !["/qr.do", "/qr"].includes(url.pathname)
-    ) {
+    const hostname = url.hostname.toLowerCase();
+    const isQrUrl =
+      hostname === "qr.dhlottery.co.kr"
+        ? url.pathname === "/"
+        : [
+            "dhlottery.co.kr",
+            "www.dhlottery.co.kr",
+            "m.dhlottery.co.kr",
+          ].includes(hostname) && ["/qr.do", "/qr"].includes(url.pathname);
+    if (!isQrUrl) {
       throw new Error("동행복권 로또 6/45 QR 주소만 등록할 수 있습니다.");
     }
     if (

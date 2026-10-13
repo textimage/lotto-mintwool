@@ -50,3 +50,5 @@ export function rawDraw(
 }
 export const qrSample =
   "https://m.dhlottery.co.kr/qr.do?method=winQr&v=1171m061921354045m112124303945m051317183342m021417303845m0507111217240000000645.net";
+export const qrRootSample =
+  "http://qr.dhlottery.co.kr/?v=1246q080915182340q030513192730q121326354043q011117223132q131625263845133189865113000084";

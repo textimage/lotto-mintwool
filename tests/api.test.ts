@@ -6,7 +6,7 @@ import { hashPassword, tokenHash } from "../server/auth.js";
 import { createApp } from "../server/app.js";
 import { SyncEngine } from "../server/sync.js";
 import { drawDateFor, favoriteLabel } from "../shared/domain.js";
-import { draw } from "./fixtures.js";
+import { draw, qrRootSample } from "./fixtures.js";
 
 const password = "unit-test-password!";
 const hash = await hashPassword(password);
@@ -737,6 +737,58 @@ test("purchase snapshots remain independent of favorite changes/deletion and can
     h.store.close();
   }
 });
+test("QR root URLs preview and register five games and reject duplicates across URL variants", async () => {
+  const h = harness();
+  try {
+    await h.login();
+    const payload = new URL(qrRootSample).searchParams.get("v")!;
+    const variants = [
+      qrRootSample,
+      qrRootSample.replace("http:", "https:"),
+      payload,
+      `https://m.dhlottery.co.kr/qr.do?v=${payload}`,
+    ];
+    for (const raw of variants) {
+      const response = await h.call("/qr/parse", "POST", { raw });
+      assert.equal(response.status, 200);
+      const preview = await response.json();
+      assert.equal(preview.drawNo, 1246);
+      assert.equal(preview.drawDate, "2026-10-17");
+      assert.equal(preview.games.length, 5);
+      assert.deepEqual(preview.games[0], {
+        numbers: [8, 9, 15, 18, 23, 40],
+        quantity: 1,
+      });
+      assert.deepEqual(preview.games[4], {
+        numbers: [13, 16, 25, 26, 38, 45],
+        quantity: 1,
+      });
+    }
+    const body = {
+      drawNo: 1246,
+      drawDate: "2026-10-17",
+      games: [{ numbers: [1, 2, 3, 4, 5, 6], quantity: 1 }],
+      source: "qr",
+      qrRaw: qrRootSample,
+    };
+    const response = await h.call("/purchases", "POST", body);
+    assert.equal(response.status, 201);
+    const ticket = await response.json();
+    assert.equal(ticket.drawNo, 1246);
+    assert.equal(ticket.games.length, 5);
+    assert.deepEqual(ticket.games[0].numbers, [8, 9, 15, 18, 23, 40]);
+    assert.match(ticket.qrFingerprint, /^[a-f0-9]{64}$/);
+    for (const qrRaw of variants) {
+      assert.equal(
+        (await h.call("/purchases", "POST", { ...body, qrRaw })).status,
+        409,
+      );
+    }
+  } finally {
+    h.store.close();
+  }
+});
+
 test("same QR is rejected across URL variants but repeated games inside a ticket remain", async () => {
   const h = harness();
   try {
