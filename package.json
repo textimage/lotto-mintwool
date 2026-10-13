@@ -1,0 +1,56 @@
+{
+  "name": "lotto-note",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"tsx watch server/index.ts\" \"vite --host 127.0.0.1\"",
+    "dev:api": "tsx watch server/index.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "start": "node dist/server/server/index.js",
+    "test": "tsx --test tests/*.test.ts",
+    "setup:admin": "tsx scripts/setup-admin.ts",
+    "deploy:oci": "bash scripts/upload-deploy.sh",
+    "backup": "tsx server/maintenance.ts backup",
+    "db:migrate": "tsx server/maintenance.ts migrate",
+    "db:snapshot": "tsx server/maintenance.ts snapshot",
+    "db:restore": "tsx server/maintenance.ts restore",
+    "sync:initial": "tsx server/maintenance.ts sync",
+    "telegram:check": "tsx scripts/telegram-check.ts",
+    "telegram:qr-check": "tsx scripts/telegram-qr-check.ts"
+  },
+  "dependencies": {
+    "@fontsource-variable/noto-sans-kr": "^5.3.1",
+    "@hono/node-server": "^2.1.4",
+    "@zxing/browser": "^0.2.1",
+    "@zxing/library": "^0.23.0",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^18.0.7",
+    "hono": "^4.13.13",
+    "lucide-react": "^1.55.0",
+    "node-cron": "^4.6.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4",
+    "sharp": "^0.35.5",
+    "tar": "^7.5.22",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

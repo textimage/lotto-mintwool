@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "outDir": "dist/server",
+    "rootDir": ".",
+    "types": ["node"],
+    "sourceMap": true
+  },
+  "include": [
+    "server",
+    "shared",
+    "scripts/setup-admin.ts",
+    "scripts/telegram-check.ts",
+    "scripts/telegram-qr-check.ts"
+  ]
+}

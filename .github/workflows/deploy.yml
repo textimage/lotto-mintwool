@@ -1,0 +1,82 @@
+name: Verify and deploy to OCI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Check shell syntax
+        run: |
+          sh -n scripts/deploy.sh
+          sh -n scripts/deploy-root.sh
+          sh -n scripts/compose.sh
+          bash -n scripts/upload-deploy.sh
+      - name: Verify Linux container and native modules
+        run: |
+          docker build --target source -t lotto-note:source-ci .
+          docker run --rm --network none --tmpfs /tmp:exec,mode=1777 -e MINTWOOL_MANAGED_FIXTURE=1 lotto-note:source-ci node --import tsx --test tests/deploy-pipeline.test.ts
+          docker build -t lotto-note:ci .
+          docker run --rm --read-only --tmpfs /app/data:uid=1000,gid=1000,mode=0700 --tmpfs /app/backups:uid=1000,gid=1000,mode=0700 --tmpfs /tmp --mount "type=bind,source=$PWD/scripts/verify-container.mjs,target=/app/scripts/verify-container.mjs,readonly" lotto-note:ci node scripts/verify-container.mjs
+
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    concurrency:
+      group: lotto-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Check that this is still the latest main commit
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$current" == "$GITHUB_SHA" ]]; then
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'deploy=false' >> "$GITHUB_OUTPUT"
+            echo 'A newer main commit exists; this deployment is skipped.'
+          fi
+      - name: Upload source and deploy
+        if: steps.latest.outputs.deploy == 'true'
+        env:
+          OCI_HOST: ${{ vars.OCI_HOST }}
+          OCI_USERNAME: ${{ vars.OCI_USERNAME || 'ubuntu' }}
+          OCI_SSH_PRIVATE_KEY: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
+          OCI_SSH_KNOWN_HOSTS: ${{ secrets.OCI_SSH_KNOWN_HOSTS }}
+          OCI_ENV_BOOTSTRAP: ${{ secrets.OCI_ENV_BOOTSTRAP }}
+          OCI_SSH_PORT: ${{ vars.OCI_SSH_PORT || '22' }}
+          OCI_DEPLOY_DIR: ${{ vars.OCI_DEPLOY_DIR || '/opt/mintwool/lotto' }}
+          APP_DOMAIN: ${{ vars.APP_DOMAIN || 'lotto.mintwool.com' }}
+          OCI_PROXY_MODE: ${{ vars.OCI_PROXY_MODE || 'existing' }}
+          OCI_DEPLOY_LOCK_FILE: ${{ vars.OCI_DEPLOY_LOCK_FILE }}
+          RELEASE_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: npm run deploy:oci

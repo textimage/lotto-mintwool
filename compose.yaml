@@ -1,0 +1,53 @@
+name: lotto-note
+services:
+  app:
+    image: ${APP_IMAGE:-lotto-note:local}
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      APP_ORIGIN: https://${APP_DOMAIN:-lotto.mintwool.com}
+      DATA_DIR: /app/data
+      BACKUP_DIR: /app/backups
+      PORT: 3000
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    volumes:
+      - app_data:/app/data
+      - app_backups:/app/backups
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-lotto.mintwool.com}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  app_data:
+  app_backups:
+  caddy_data:
+  caddy_config:
